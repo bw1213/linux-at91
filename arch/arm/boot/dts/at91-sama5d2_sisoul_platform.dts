@@ -99,16 +99,17 @@
 
 		apb {
 			hlcdc: hlcdc@f0000000 {
-				status = "disabled";
+				status = "okay";
+                pinctrl-names = "default";
+                pinctrl-0 = <&pinctrl_lcd_base &pinctrl_lcd_rgb888>;
 
 				hlcdc-display-controller {
-					pinctrl-names = "default";
-					pinctrl-0 = <&pinctrl_lcd_base &pinctrl_lcd_rgb888>;
-				};
-
-				hlcdc_bl: hlcdc-bl {
-					pinctrl-names = "default";
-					pinctrl-0 = <&pinctrl_lcd_bl>;
+					port@0 {
+						hlcdc_panel_output: endpoint@0 {
+							reg = <0>;
+							remote-endpoint = <&panel_input>;
+						};
+					};
 				};
 			};
 
@@ -462,26 +463,56 @@
 		red {
 			label = "red";
 			gpios = <&pioA 102 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "gpio";
 		};
 
 		green {
 			label = "green";
 			gpios = <&pioA 103 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "gpio";
 		};
 
 		blue {
 			label = "blue";
 			gpios = <&pioA 104 GPIO_ACTIVE_LOW>;
-			linux,default-trigger = "heartbeat";
+			linux,default-trigger = "gpio";
 		};
 	};
 
 	backlight: backlight {
 		compatible = "gpio-backlight";
         gpios = <&pioA 95 GPIO_ACTIVE_HIGH>;
-        default-off;
+        default-on;
         pinctrl-names = "default";
         pinctrl-0 = <&pinctrl_backlight_default>;
+		status = "okay";
+	};
+
+	panel: panel {
+		compatible = "eastrising,ertft043-3", "simple-panel";
+		backlight = <&backlight>;
+		power-supply = <&panel_reg>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			panel_input: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&hlcdc_panel_output>;
+			};
+		};
+	};
+
+	panel_reg: panel_regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-power-supply";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
 		status = "okay";
 	};
 };

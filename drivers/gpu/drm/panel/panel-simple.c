@@ -348,7 +348,7 @@ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
 		goto free_ddc;
 
 	dev_set_drvdata(dev, panel);
-
+    printk("panel add success\n");
 	return 0;
 
 free_ddc:
@@ -1552,6 +1552,31 @@ static const struct panel_desc urt_umsh_8596md_parallel = {
 	.bus_format = MEDIA_BUS_FMT_RGB666_1X18,
 };
 
+static const struct display_timing eastrising_ertft043_timing = {
+	.pixelclock = { 5000000, 9000000, 12000000 },
+	.hactive = { 480, 480, 480 },
+	.hfront_porch = { 4, 5, 65 },
+	.hback_porch = { 36, 40, 255 },
+	.hsync_len = { 1, 1, 1 },
+	.vactive = { 272, 272, 272 },
+	.vfront_porch = { 2, 8, 97 },
+	.vback_porch = { 3, 8, 31 },
+	.vsync_len = { 1, 1, 1 },
+	.flags = DISPLAY_FLAGS_DE_HIGH | DISPLAY_FLAGS_PIXDATA_NEGEDGE |
+		DISPLAY_FLAGS_HSYNC_LOW | DISPLAY_FLAGS_VSYNC_LOW,
+};
+
+static const struct panel_desc eastrising_ertft043 = {
+	.timings = &eastrising_ertft043_timing,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 95,
+		.height = 54,
+	},
+	.bus_format = MEDIA_BUS_FMT_BGR888_1X24,
+};
+
 static const struct of_device_id platform_of_match[] = {
 	{
 		.compatible = "ampire,am800480r3tmqwa1h",
@@ -1631,6 +1656,9 @@ static const struct of_device_id platform_of_match[] = {
 	}, {
 		.compatible = "innolux,zj070na-01p",
 		.data = &innolux_zj070na_01p,
+	}, {
+		.compatible = "eastrising,ertft043-3",
+		.data = &eastrising_ertft043,
 	}, {
 		.compatible = "kyo,tcg121xglp",
 		.data = &kyo_tcg121xglp,
@@ -1724,8 +1752,11 @@ static int panel_simple_platform_probe(struct platform_device *pdev)
 
 	id = of_match_node(platform_of_match, pdev->dev.of_node);
 	if (!id)
+    {
+        printk("[%s] not matched\n", __func__);
 		return -ENODEV;
-
+    }
+    printk("[%s] matched the %s\n", __func__, id->compatible);
 	return panel_simple_probe(&pdev->dev, id->data);
 }
 
