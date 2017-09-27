@@ -170,10 +170,22 @@ struct atmel_uart_port {
 	bool			has_hw_timer;
 	struct timer_list	uart_timer;
 
+	bool			tx_stopped;
 	bool			suspended;
 	unsigned int		pending;
 	unsigned int		pending_status;
 	spinlock_t		lock_suspended;
+
+	struct {
+		u32		cr;
+		u32		mr;
+		u32		imr;
+		u32		brgr;
+		u32		rtor;
+		u32		ttgr;
+		u32		fmr;
+		u32		fimr;
+	} cache;
 
 	int (*prepare_rx)(struct uart_port *port);
 	int (*prepare_tx)(struct uart_port *port);
@@ -383,6 +395,10 @@ static int atmel_config_rs485(struct uart_port *port,
  */
 static u_int atmel_tx_empty(struct uart_port *port)
 {
+	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
+
+	if (atmel_port->tx_stopped)
+		return TIOCSER_TEMT;
 	return (atmel_uart_readl(port, ATMEL_US_CSR) & ATMEL_US_TXEMPTY) ?
 		TIOCSER_TEMT :
 		0;
@@ -488,6 +504,7 @@ static void atmel_stop_tx(struct uart_port *port)
 	 * is fully transmitted.
 	 */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXDIS);
+	atmel_port->tx_stopped = true;
 
 	/* Disable interrupts */
 	atmel_uart_writel(port, ATMEL_US_IDR, atmel_port->tx_done_mask);
@@ -495,6 +512,7 @@ static void atmel_stop_tx(struct uart_port *port)
 	if ((port->rs485.flags & SER_RS485_ENABLED) &&
 	    !(port->rs485.flags & SER_RS485_RX_DURING_TX))
 		atmel_start_rx(port);
+
 }
 
 /*
@@ -524,6 +542,7 @@ static void atmel_start_tx(struct uart_port *port)
 
 	/* re-enable the transmitter */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN);
+	atmel_port->tx_stopped = false;
 }
 
 /*
@@ -1885,6 +1904,7 @@ static int atmel_startup(struct uart_port *port)
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RSTSTA | ATMEL_US_RSTRX);
 	/* enable xmit & rcvr */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN | ATMEL_US_RXEN);
+	atmel_port->tx_stopped = false;
 
 	setup_timer(&atmel_port->uart_timer,
 			atmel_uart_timer_callback,
@@ -2141,6 +2161,7 @@ static void atmel_set_termios(struct uart_port *port, struct ktermios *termios,
 
 	/* disable receiver and transmitter */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXDIS | ATMEL_US_RXDIS);
+	atmel_port->tx_stopped = true;
 
 	/* mode */
 	if (port->rs485.flags & SER_RS485_ENABLED) {
@@ -2226,6 +2247,7 @@ static void atmel_set_termios(struct uart_port *port, struct ktermios *termios,
 	atmel_uart_writel(port, ATMEL_US_BRGR, quot);
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RSTSTA | ATMEL_US_RSTRX);
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN | ATMEL_US_RXEN);
+	atmel_port->tx_stopped = false;
 
 	/* restore interrupts */
 	atmel_uart_writel(port, ATMEL_US_IER, imr);
@@ -2479,6 +2501,7 @@ static void atmel_console_write(struct console *co, const char *s, u_int count)
 
 	/* Make sure that tx path is actually able to send characters */
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN);
+	atmel_port->tx_stopped = false;
 
 	uart_console_write(port, s, count, atmel_console_putchar);
 
@@ -2540,6 +2563,7 @@ static int __init atmel_console_setup(struct console *co, char *options)
 {
 	int ret;
 	struct uart_port *port = &atmel_ports[co->index].uart;
+	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
 	int baud = 115200;
 	int bits = 8;
 	int parity = 'n';
@@ -2557,6 +2581,7 @@ static int __init atmel_console_setup(struct console *co, char *options)
 	atmel_uart_writel(port, ATMEL_US_IDR, -1);
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_RSTSTA | ATMEL_US_RSTRX);
 	atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_TXEN | ATMEL_US_RXEN);
+	atmel_port->tx_stopped = false;
 
 	if (options)
 		uart_parse_options(options, &baud, &parity, &bits, &flow);
@@ -2668,6 +2693,19 @@ static int atmel_serial_suspend(struct platform_device *pdev,
 			cpu_relax();
 	}
 
+	if (atmel_is_console_port(port) && !console_suspend_enabled) {
+		/* Cache register values as we won't get a full shutdown/startup
+		 * cycle*/
+		atmel_port->cache.mr = atmel_uart_readl(port, ATMEL_US_MR);
+		atmel_port->cache.imr = atmel_uart_readl(port, ATMEL_US_IMR);
+		atmel_port->cache.brgr = atmel_uart_readl(port, ATMEL_US_BRGR);
+		atmel_port->cache.rtor = atmel_uart_readl(port,
+							  atmel_port->rtor);
+		atmel_port->cache.ttgr = atmel_uart_readl(port, ATMEL_US_TTGR);
+		atmel_port->cache.fmr = atmel_uart_readl(port, ATMEL_US_FMR);
+		atmel_port->cache.fimr = atmel_uart_readl(port, ATMEL_US_FIMR);
+	}
+
 	/* we can not wake up if we're running on slow clock */
 	atmel_port->may_wakeup = device_may_wakeup(&pdev->dev);
 	if (atmel_serial_clk_will_stop()) {
@@ -2689,6 +2727,25 @@ static int atmel_serial_resume(struct platform_device *pdev)
 	struct uart_port *port = platform_get_drvdata(pdev);
 	struct atmel_uart_port *atmel_port = to_atmel_uart_port(port);
 	unsigned long flags;
+
+	if (atmel_is_console_port(port) && !console_suspend_enabled) {
+		atmel_uart_writel(port, ATMEL_US_MR, atmel_port->cache.mr);
+		atmel_uart_writel(port, ATMEL_US_IER, atmel_port->cache.imr);
+		atmel_uart_writel(port, ATMEL_US_BRGR, atmel_port->cache.brgr);
+		atmel_uart_writel(port, atmel_port->rtor,
+				  atmel_port->cache.rtor);
+		atmel_uart_writel(port, ATMEL_US_TTGR, atmel_port->cache.ttgr);
+
+		if (atmel_port->fifo_size) {
+			atmel_uart_writel(port, ATMEL_US_CR, ATMEL_US_FIFOEN |
+					  ATMEL_US_RXFCLR | ATMEL_US_TXFLCLR);
+			atmel_uart_writel(port, ATMEL_US_FMR,
+					  atmel_port->cache.fmr);
+			atmel_uart_writel(port, ATMEL_US_FIER,
+					  atmel_port->cache.fimr);
+		}
+		atmel_start_rx(port);
+	}
 
 	spin_lock_irqsave(&atmel_port->lock_suspended, flags);
 	if (atmel_port->pending) {

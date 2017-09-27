@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+#include <dt-bindings/pinctrl/at91.h>
 #include <linux/clk.h>
 #include <linux/gpio/driver.h>
 /* FIXME: needed for gpio_to_irq(), get rid of this */
@@ -49,6 +50,8 @@
 #define		ATMEL_PIO_IFSCEN_MASK		BIT(13)
 #define		ATMEL_PIO_OPD_MASK		BIT(14)
 #define		ATMEL_PIO_SCHMITT_MASK		BIT(15)
+#define		ATMEL_PIO_DRVSTR_MASK		GENMASK(17, 16)
+#define		ATMEL_PIO_DRVSTR_OFFSET		16
 #define		ATMEL_PIO_CFGR_EVTSEL_MASK	GENMASK(26, 24)
 #define		ATMEL_PIO_CFGR_EVTSEL_FALLING	(0 << 24)
 #define		ATMEL_PIO_CFGR_EVTSEL_RISING	(1 << 24)
@@ -126,7 +129,11 @@ struct atmel_pioctrl {
 	struct irq_domain	*irq_domain;
 	int			*irqs;
 	unsigned		*pm_wakeup_sources;
-	unsigned		*pm_suspend_backup;
+	struct {
+		u32		imr;
+		u32		odsr;
+		u32		cfgr[ATMEL_PIO_NPINS_PER_BANK];
+	} *pm_suspend_backup;
 	struct device		*dev;
 	struct device_node	*node;
 };
@@ -682,6 +689,11 @@ static int atmel_conf_pin_config_group_get(struct pinctrl_dev *pctldev,
 			return -EINVAL;
 		arg = 1;
 		break;
+	case PIN_CONFIG_DRIVE_STRENGTH:
+		if (!(res & ATMEL_PIO_DRVSTR_MASK))
+			return -EINVAL;
+		arg = (res & ATMEL_PIO_DRVSTR_MASK) >> ATMEL_PIO_DRVSTR_OFFSET;
+		break;
 	case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
 		if (!(res & ATMEL_PIO_SCHMITT_MASK))
 			return -EINVAL;
@@ -733,6 +745,18 @@ static int atmel_conf_pin_config_group_set(struct pinctrl_dev *pctldev,
 				conf &= (~ATMEL_PIO_OPD_MASK);
 			else
 				conf |= ATMEL_PIO_OPD_MASK;
+			break;
+		case PIN_CONFIG_DRIVE_STRENGTH:
+			switch (arg) {
+			case ATMEL_PIO_DRVSTR_LO:
+			case ATMEL_PIO_DRVSTR_ME:
+			case ATMEL_PIO_DRVSTR_HI:
+				conf &= (~ATMEL_PIO_DRVSTR_MASK);
+				conf |= arg << ATMEL_PIO_DRVSTR_OFFSET;
+				break;
+			default:
+				dev_warn(pctldev->dev, "drive strength not updated (incorrect value)\n");
+			}
 			break;
 		case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
 			if (arg == 0)
@@ -811,6 +835,19 @@ static void atmel_conf_pin_config_dbg_show(struct pinctrl_dev *pctldev,
 		seq_printf(s, "%s ", "open-drain");
 	if (conf & ATMEL_PIO_SCHMITT_MASK)
 		seq_printf(s, "%s ", "schmitt");
+	if (conf & ATMEL_PIO_DRVSTR_MASK) {
+		switch ((conf & ATMEL_PIO_DRVSTR_MASK) >> ATMEL_PIO_DRVSTR_OFFSET) {
+		case ATMEL_PIO_DRVSTR_LO:
+			seq_printf(s, "%s ", "low-drive");
+			break;
+		case ATMEL_PIO_DRVSTR_ME:
+			seq_printf(s, "%s ", "medium-drive");
+			break;
+		case ATMEL_PIO_DRVSTR_HI:
+			seq_printf(s, "%s ", "high-drive");
+			break;
+		}
+	}
 }
 
 static const struct pinconf_ops atmel_confops = {
@@ -830,17 +867,26 @@ static int __maybe_unused atmel_pctrl_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct atmel_pioctrl *atmel_pioctrl = platform_get_drvdata(pdev);
-	int i;
+	int i, j;
 
 	/*
 	 * For each bank, save IMR to restore it later and disable all GPIO
 	 * interrupts excepting the ones marked as wakeup sources.
 	 */
 	for (i = 0; i < atmel_pioctrl->nbanks; i++) {
-		atmel_pioctrl->pm_suspend_backup[i] =
+		atmel_pioctrl->pm_suspend_backup[i].imr =
 			atmel_gpio_read(atmel_pioctrl, i, ATMEL_PIO_IMR);
 		atmel_gpio_write(atmel_pioctrl, i, ATMEL_PIO_IDR,
 				 ~atmel_pioctrl->pm_wakeup_sources[i]);
+		atmel_pioctrl->pm_suspend_backup[i].odsr =
+			atmel_gpio_read(atmel_pioctrl, i, ATMEL_PIO_ODSR);
+		for (j = 0; j < ATMEL_PIO_NPINS_PER_BANK; j++) {
+			atmel_gpio_write(atmel_pioctrl, i,
+					 ATMEL_PIO_MSKR, BIT(j));
+			atmel_pioctrl->pm_suspend_backup[i].cfgr[j] =
+				atmel_gpio_read(atmel_pioctrl, i,
+						ATMEL_PIO_CFGR);
+		}
 	}
 
 	return 0;
@@ -850,17 +896,26 @@ static int __maybe_unused atmel_pctrl_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct atmel_pioctrl *atmel_pioctrl = platform_get_drvdata(pdev);
-	int i;
+	int i, j;
 
-	for (i = 0; i < atmel_pioctrl->nbanks; i++)
+	for (i = 0; i < atmel_pioctrl->nbanks; i++) {
 		atmel_gpio_write(atmel_pioctrl, i, ATMEL_PIO_IER,
-				 atmel_pioctrl->pm_suspend_backup[i]);
+				 atmel_pioctrl->pm_suspend_backup[i].imr);
+		atmel_gpio_write(atmel_pioctrl, i, ATMEL_PIO_SODR,
+				 atmel_pioctrl->pm_suspend_backup[i].odsr);
+		for (j = 0; j < ATMEL_PIO_NPINS_PER_BANK; j++) {
+			atmel_gpio_write(atmel_pioctrl, i,
+					 ATMEL_PIO_MSKR, BIT(j));
+			atmel_gpio_write(atmel_pioctrl, i, ATMEL_PIO_CFGR,
+					 atmel_pioctrl->pm_suspend_backup[i].cfgr[j]);
+		}
+	}
 
 	return 0;
 }
 
 static const struct dev_pm_ops atmel_pctrl_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(atmel_pctrl_suspend, atmel_pctrl_resume)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(atmel_pctrl_suspend, atmel_pctrl_resume)
 };
 
 /*

@@ -213,6 +213,7 @@ struct ov7670_devtype {
 struct ov7670_format_struct;  /* coming later */
 struct ov7670_info {
 	struct v4l2_subdev sd;
+	struct media_pad pad;
 	struct v4l2_ctrl_handler hdl;
 	struct {
 		/* gain cluster */
@@ -1505,6 +1506,22 @@ static int ov7670_s_register(struct v4l2_subdev *sd, const struct v4l2_dbg_regis
 }
 #endif
 
+static int ov7670_s_power(struct v4l2_subdev *sd, int on)
+{
+	struct ov7670_info *info = to_state(sd);
+
+	if (info->pwdn_gpio)
+		gpiod_direction_output(info->pwdn_gpio, !on);
+	if (on && info->resetb_gpio) {
+		gpiod_set_value(info->resetb_gpio, 1);
+		usleep_range(500, 1000);
+		gpiod_set_value(info->resetb_gpio, 0);
+		usleep_range(3000, 5000);
+	}
+
+	return 0;
+}
+
 /* ----------------------------------------------------------------------- */
 
 static const struct v4l2_subdev_core_ops ov7670_core_ops = {
@@ -1514,6 +1531,7 @@ static const struct v4l2_subdev_core_ops ov7670_core_ops = {
 	.g_register = ov7670_g_register,
 	.s_register = ov7670_s_register,
 #endif
+	.s_power = ov7670_s_power,
 };
 
 static const struct v4l2_subdev_video_ops ov7670_video_ops = {
@@ -1567,8 +1585,6 @@ static int ov7670_init_gpio(struct i2c_client *client, struct ov7670_info *info)
 		return PTR_ERR(info->resetb_gpio);
 	}
 
-	usleep_range(3000, 5000);
-
 	return 0;
 }
 
@@ -1617,15 +1633,17 @@ static int ov7670_probe(struct i2c_client *client,
 		return -EPROBE_DEFER;
 	clk_prepare_enable(info->clk);
 
-	ret = ov7670_init_gpio(client, info);
-	if (ret)
-		goto clk_disable;
-
 	info->clock_speed = clk_get_rate(info->clk) / 1000000;
 	if (info->clock_speed < 10 || info->clock_speed > 48) {
 		ret = -EINVAL;
 		goto clk_disable;
 	}
+
+	ret = ov7670_init_gpio(client, info);
+	if (ret)
+		goto clk_disable;
+
+	ov7670_s_power(sd, 1);
 
 	/* Make sure it's an ov7670 */
 	ret = ov7670_detect(sd);
@@ -1633,7 +1651,7 @@ static int ov7670_probe(struct i2c_client *client,
 		v4l_dbg(1, debug, client,
 			"chip found @ 0x%x (%s) is not an ov7670 chip.\n",
 			client->addr << 1, client->adapter->name);
-		goto clk_disable;
+		goto power_off;
 	}
 	v4l_info(client, "chip found @ 0x%02x (%s)\n",
 			client->addr << 1, client->adapter->name);
@@ -1686,16 +1704,31 @@ static int ov7670_probe(struct i2c_client *client,
 	v4l2_ctrl_auto_cluster(2, &info->auto_exposure,
 			       V4L2_EXPOSURE_MANUAL, false);
 	v4l2_ctrl_cluster(2, &info->saturation);
+
+#if defined(CONFIG_MEDIA_CONTROLLER)
+	info->pad.flags = MEDIA_PAD_FL_SOURCE;
+	info->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ret = media_entity_pads_init(&info->sd.entity, 1, &info->pad);
+	if (ret < 0)
+		goto hdl_free;
+#endif
+
 	v4l2_ctrl_handler_setup(&info->hdl);
 
 	ret = v4l2_async_register_subdev(&info->sd);
 	if (ret < 0)
-		goto hdl_free;
+		goto failed_sd;
 
 	return 0;
 
+failed_sd:
+#if defined(CONFIG_MEDIA_CONTROLLER)
+	media_entity_cleanup(&info->sd.entity);
+#endif
 hdl_free:
 	v4l2_ctrl_handler_free(&info->hdl);
+power_off:
+	ov7670_s_power(sd, 0);
 clk_disable:
 	clk_disable_unprepare(info->clk);
 	return ret;
@@ -1710,6 +1743,10 @@ static int ov7670_remove(struct i2c_client *client)
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&info->hdl);
 	clk_disable_unprepare(info->clk);
+#if defined(CONFIG_MEDIA_CONTROLLER)
+	media_entity_cleanup(&info->sd.entity);
+#endif
+	ov7670_s_power(sd, 0);
 	return 0;
 }
 

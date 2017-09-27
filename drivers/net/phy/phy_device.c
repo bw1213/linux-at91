@@ -150,14 +150,9 @@ no_resume:
 	return 0;
 }
 
-static int mdio_bus_phy_restore(struct device *dev)
+int phy_restore(struct phy_device *phydev)
 {
-	struct phy_device *phydev = to_phy_device(dev);
-	struct net_device *netdev = phydev->attached_dev;
 	int ret;
-
-	if (!netdev)
-		return 0;
 
 	ret = phy_init_hw(phydev);
 	if (ret < 0)
@@ -170,6 +165,18 @@ static int mdio_bus_phy_restore(struct device *dev)
 	phy_start_machine(phydev);
 
 	return 0;
+}
+EXPORT_SYMBOL(phy_restore);
+
+static int mdio_bus_phy_restore(struct device *dev)
+{
+	struct phy_device *phydev = to_phy_device(dev);
+	struct net_device *netdev = phydev->attached_dev;
+
+	if (!netdev)
+		return 0;
+
+	return phy_restore(phydev);
 }
 
 static const struct dev_pm_ops mdio_bus_phy_pm_ops = {
@@ -1714,6 +1721,8 @@ static int phy_remove(struct device *dev)
 {
 	struct phy_device *phydev = to_phy_device(dev);
 
+	cancel_delayed_work_sync(&phydev->state_queue);
+
 	mutex_lock(&phydev->lock);
 	phydev->state = PHY_DOWN;
 	mutex_unlock(&phydev->lock);
@@ -1792,7 +1801,7 @@ static struct phy_driver genphy_driver[] = {
 	.phy_id		= 0xffffffff,
 	.phy_id_mask	= 0xffffffff,
 	.name		= "Generic PHY",
-	.soft_reset	= genphy_soft_reset,
+	.soft_reset	= genphy_no_soft_reset,
 	.config_init	= genphy_config_init,
 	.features	= PHY_GBIT_FEATURES | SUPPORTED_MII |
 			  SUPPORTED_AUI | SUPPORTED_FIBRE |
