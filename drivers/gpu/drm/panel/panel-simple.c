@@ -1574,7 +1574,7 @@ static const struct panel_desc eastrising_ertft043 = {
 		.width = 95,
 		.height = 54,
 	},
-	.bus_format = MEDIA_BUS_FMT_BGR888_1X24,
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
 };
 
 static const struct of_device_id platform_of_match[] = {

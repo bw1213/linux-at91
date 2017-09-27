@@ -353,6 +353,7 @@
 					pinmux = <PIN_PD6__GPIO>,
 						 <PIN_PD7__GPIO>,
 						 <PIN_PD8__GPIO>;
+                    drive-strength = <3>;
 					bias-pull-up;
 				};
 
