@@ -253,6 +253,23 @@
 				status = "okay";
 			};
 
+            flx2: flexcom@fc010000 {
+				atmel,flexcom-mode = <ATMEL_FLEXCOM_MODE_USART>;
+				status = "okay";
+
+                uart5: serial@200 {
+					compatible = "atmel,at91sam9260-usart";
+					reg = <0x200 0x200>;
+					interrupts = <21 IRQ_TYPE_LEVEL_HIGH 7>;
+					clocks = <&flx2_clk>;
+					clock-names = "usart";
+					pinctrl-names = "default";
+					pinctrl-0 = <&pinctrl_flx2_default>;
+					atmel,fifo-size = <32>;
+					status = "okay";
+                };
+            };
+
 			i2c1: i2c@fc028000 {
 				dmas = <0>, <0>;
 				pinctrl-names = "default";
@@ -290,6 +307,15 @@
 						 <PIN_PB3__CLASSD_R2>,
 						 <PIN_PB4__CLASSD_R3>;
 					bias-pull-up;
+				};
+
+				pinctrl_flx2_default: flx2_default {
+					pinmux = <PIN_PD26__FLEXCOM2_IO0>,
+						 <PIN_PD27__FLEXCOM2_IO1>,
+						 <PIN_PD28__FLEXCOM2_IO2>,
+						 <PIN_PD29__FLEXCOM2_IO3>,
+						 <PIN_PD30__FLEXCOM2_IO4>;
+					bias-disable;
 				};
 
 				pinctrl_i2c0_default: i2c0_default {
